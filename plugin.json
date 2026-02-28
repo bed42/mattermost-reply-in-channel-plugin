@@ -1,0 +1,26 @@
+{
+    "id": "reply-in-channel",
+    "name": "Reply in Channel",
+    "description": "Discord-style Reply in Channel - reply to any message inline with a blockquote of the original",
+    "homepage_url": "https://github.com/bed/mattermost-reply-in-channel-plugin",
+    "support_url": "https://github.com/bed/mattermost-reply-in-channel-plugin/issues",
+    "icon_path": "assets/starter-template-icon.svg",
+    "min_server_version": "7.0.0",
+    "server": {
+        "executables": {
+            "linux-amd64": "server/dist/plugin-linux-amd64",
+            "linux-arm64": "server/dist/plugin-linux-arm64",
+            "darwin-amd64": "server/dist/plugin-darwin-amd64",
+            "darwin-arm64": "server/dist/plugin-darwin-arm64",
+            "windows-amd64": "server/dist/plugin-windows-amd64.exe"
+        }
+    },
+    "webapp": {
+        "bundle_path": "webapp/dist/main.js"
+    },
+    "settings_schema": {
+        "header": "",
+        "footer": "",
+        "settings": []
+    }
+}
