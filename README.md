@@ -44,7 +44,8 @@ From within any thread, type:
 
 - Must be used from within a thread (not the main channel)
 - The message cannot be empty
-- Supports full Mattermost markdown, emoji, file attachments etc. in your reply
+- Supports full Mattermost markdown, emoji, etc. in your reply
+- File attachments are forwarded on a best-effort basis (see Limitations below)
 
 ## Features
 
@@ -91,6 +92,10 @@ Since the channel post needs a link to the thread reply (and vice versa), and ne
 1. Create channel post without a permalink
 2. Create thread reply with a link to the channel post
 3. Update the channel post with a link to the thread reply
+
+## Limitations
+
+- **File attachments**: Mattermost's slash command API does not pass file attachment IDs to plugins. The plugin attempts to recover recently uploaded orphaned files, but this is best-effort and may not work in all cases. If attachments don't appear, try posting the file separately.
 
 ## Security
 

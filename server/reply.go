@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 const maxQuoteLength = 200
@@ -39,6 +41,21 @@ func formatQuotedReply(authorUsername, originalMessage, replyText, permalink str
 // defangURLs wraps URLs in backticks to prevent Mattermost from generating link previews.
 func defangURLs(text string) string {
 	return urlPattern.ReplaceAllString(text, "`$0`")
+}
+
+// formatChannelRef builds the "Also sent to" text for the thread reply.
+// For public/private channels it uses ~channelname (clickable in Mattermost).
+// For DMs/GMs it uses the display name since ~name doesn't render for those.
+func formatChannelRef(channel *model.Channel, permalink string) string {
+	if channel.Type == model.ChannelTypeOpen || channel.Type == model.ChannelTypePrivate {
+		return fmt.Sprintf("[Also sent to ~%s](%s)", channel.Name, permalink)
+	}
+	// DM/GM: use display name or fall back to generic text
+	displayName := channel.DisplayName
+	if displayName == "" {
+		displayName = "this conversation"
+	}
+	return fmt.Sprintf("[Also sent to %s](%s)", displayName, permalink)
 }
 
 // stripBlockquotes removes existing blockquote lines from a message to avoid nested quotes.

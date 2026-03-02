@@ -74,11 +74,27 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		}, nil
 	}
 
+	// Attempt to recover orphaned file attachments from the slash command.
+	// Mattermost uploads files but doesn't pass FileIds to CommandArgs,
+	// so we search for recent unattached files by this user in this channel.
+	orphanedFileIds := p.findOrphanedFiles(args.UserId, args.ChannelId)
+
 	// Create channel post first without permalink
 	channelPost := &model.Post{
 		UserId:    args.UserId,
 		ChannelId: args.ChannelId,
 		Message:   formatQuotedReply(rootAuthor.Username, rootPost.Message, message, ""),
+	}
+
+	// Attach recovered files to the channel post (use copies so originals go to thread)
+	if len(orphanedFileIds) > 0 {
+		copiedFileIds, copyErr := p.API.CopyFileInfos(args.UserId, orphanedFileIds)
+		if copyErr != nil {
+			p.API.LogWarn("Failed to copy file infos for channel post", "error", copyErr.Error())
+		} else {
+			channelPost.FileIds = copiedFileIds
+			p.API.LogDebug("Attached copied files to channel post", "fileIds", fmt.Sprintf("%v", copiedFileIds))
+		}
 	}
 
 	createdChannelPost, appErr := p.API.CreatePost(channelPost)
@@ -95,7 +111,8 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 
 	threadMessage := message
 	if channelPostLink != "" && channel != nil {
-		threadMessage = fmt.Sprintf("%s\n\n> [Also sent to ~%s](%s)", message, channel.Name, channelPostLink)
+		channelRef := formatChannelRef(channel, channelPostLink)
+		threadMessage = fmt.Sprintf("%s\n\n> %s", message, channelRef)
 	}
 
 	threadPost := &model.Post{
@@ -104,6 +121,13 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		RootId:    args.RootId,
 		Message:   threadMessage,
 	}
+
+	// Attach original orphaned files to the thread post
+	if len(orphanedFileIds) > 0 {
+		threadPost.FileIds = model.StringArray(orphanedFileIds)
+		p.API.LogDebug("Attached original files to thread post", "fileIds", fmt.Sprintf("%v", orphanedFileIds))
+	}
+
 	createdThreadPost, threadErr := p.API.CreatePost(threadPost)
 	if threadErr != nil {
 		p.API.LogWarn("Failed to create thread reply", "error", threadErr.Error())
