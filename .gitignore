@@ -1,5 +1,7 @@
 bin/
 dist/
+server/dist/
+server/server
 webapp/src/manifest.ts
 server/manifest.go
 

@@ -1,140 +1,100 @@
 # Mattermost "Reply in Channel" Plugin
 
-## Goal
+> **Disclaimer:** This project was built with the guidance of a human developer and implemented primarily by [Claude Code](https://claude.com/claude-code) (Anthropic's AI coding assistant). I didn't have time to dev all of this by hand myself, but did have enough to guide Claude to do so! If LLM-assisted development is something you actively avoid, consider this your fair warning.
 
-Add a Discord-style "Reply in Channel" option to Mattermost. When a user selects this from a post's "..." dropdown menu, they get a modal to type a reply. The reply is posted to the channel (not in a thread) with a blockquote of the original message, attributed to the acting user (not a bot).
+## What it does
 
-## What it should look like in the channel
+Adds a `/ric` slash command to Mattermost that lets you reply to a thread inline in the channel — similar to Slack's "Also send to channel" feature. Works on all platforms including **web, desktop, iOS, and Android**.
+
+When you run `/ric your message` from within a thread, the plugin:
+
+1. **Posts a formatted reply in the channel** with a quote of the thread's root message and a clickable link back to the thread
+2. **Posts your plain reply in the thread** with a link to the channel post
+
+## What it looks like
+
+### In the channel
 
 ```
-> **@originaluser**: Original message text here...
+Replying to @erik's thread:
+> Kinda cool to see rust sorta taking off in its own niche. It's a pretty cool language
 
-User's reply text here
+its slowly taking over parts of the linux stack too isn't it?
 ```
 
-## Why this is needed
+The "Replying to @erik's thread" text is a clickable link that opens the thread.
 
-Mattermost's built-in reply always opens a thread. There's no way to reply inline in the channel with context about what you're replying to (like Discord does). Slack has "Also send to channel" for thread replies, but Mattermost has neither feature. The plugin API can't modify the core reply button or thread composer, but we CAN add a custom action to the post dropdown menu.
+### In the thread
 
-## Platform support
+```
+its slowly taking over parts of the linux stack too isn't it?
 
-- **Web/Desktop**: Full support via `registerPostDropdownMenuAction` + custom React modal
-- **Mobile**: NOT supported. The Mattermost mobile app does not render webapp plugin dropdown menu actions. This is a platform limitation. A future enhancement could add a `/reply [permalink]` slash command for mobile users.
+> Also sent to ~town-square
+```
+
+The "Also sent to ~town-square" is a clickable link to the channel post.
+
+## Usage
+
+From within any thread, type:
+
+```
+/ric your reply message here
+```
+
+- Must be used from within a thread (not the main channel)
+- The message cannot be empty
+- Supports full Mattermost markdown, emoji, file attachments etc. in your reply
+
+## Features
+
+- **Cross-platform**: Works on web, desktop, and mobile (it's a server-side slash command)
+- **URL defanging**: URLs in the quoted original message are wrapped in backticks to prevent duplicate link previews
+- **Blockquote stripping**: Existing blockquotes in the original message are stripped to avoid nested quotes
+- **Long message truncation**: Original messages over 200 characters are truncated in the quote
+- **Permalink support**: Both the channel post and thread reply include clickable links to each other
+- **DM/GM support**: Works in direct messages and group messages (picks the user's first team for permalink construction)
+
+## Building
+
+```bash
+make dist
+```
+
+The plugin bundle will be at `dist/reply-in-channel-*.tar.gz`.
+
+Other useful targets:
+
+- `make test` — run Go tests
+- `make server` — compile server only
+- `make deploy` — deploy to a Mattermost instance (requires `MM_SERVICESETTINGS_SITEURL` and `MM_ADMIN_TOKEN` env vars)
+
+## Installation
+
+1. Build the plugin or download a release
+2. Go to **System Console > Plugins > Plugin Management**
+3. Upload the `.tar.gz` file
+4. Enable the plugin
 
 ## Architecture
 
-### Flow
+This is a server-only plugin (no webapp component). All functionality is implemented via:
 
-1. User clicks "..." on any message -> sees "Reply in Channel" option
-2. Clicking it opens a custom React modal showing the original message as context + a text area
-3. User types their reply and clicks Submit
-4. Webapp POSTs to `POST /plugins/{pluginId}/api/v1/reply-in-channel` with `{post_id, message}`
-5. Server extracts user ID from `Mattermost-User-ID` header (the acting user, already authenticated)
-6. Server fetches original post via `p.API.GetPost(postID)` and original author via `p.API.GetUser(post.UserId)`
-7. Server creates a new post via `p.API.CreatePost()` with `UserId` set to the acting user's ID
-8. The post appears in the channel as the user's own message (no BOT tag) with a blockquote of the original
+- **Slash command** (`/ric`) registered in `OnActivate`
+- **`ExecuteCommand`** hook handles the command, creates posts via `p.API.CreatePost()`, and builds permalinks
+- **`formatQuotedReply`** handles message formatting (quoting, truncation, URL defanging, blockquote stripping)
 
-### Key technical findings
+### How the permalink dance works
 
-- **`p.API.CreatePost()` accepts any `UserId`** - no permission check on the user ID field. The post appears as that user authored it, with no BOT tag. Only a `from_plugin: "true"` prop is added as metadata.
-- **`Mattermost-User-ID` header** is injected by the Mattermost server on all authenticated requests to plugin HTTP endpoints.
-- **`registerPostDropdownMenuAction`** filter callback receives the full `Post` object but the action callback receives no arguments. Use a closure pattern: stash the post from the filter, use it in the action.
-- **Interactive dialogs require a `trigger_id`** (only from slash commands or button clicks), so a custom React modal via `registerRootComponent` is the way to go for the "..." menu approach.
+Since the channel post needs a link to the thread reply (and vice versa), and neither post ID exists before creation:
 
-## Implementation plan
+1. Create channel post without a permalink
+2. Create thread reply with a link to the channel post
+3. Update the channel post with a link to the thread reply
 
-### Scaffold
+## Security
 
-Start from the Mattermost plugin starter template or copy the structure from `mattermost-social-previews-plugin`. The plugin needs both server (Go) and webapp (TypeScript/React) components.
-
-Plugin ID: `reply-in-channel`
-
-### Files to create
-
-#### Server (Go)
-
-**`server/plugin.go`**
-
-- Standard plugin struct with `MattermostPlugin` embedding
-- `OnActivate` / `OnDeactivate` lifecycle hooks
-
-**`server/api.go`**
-
-- `ServeHTTP` with mux router
-- Auth middleware checking `Mattermost-User-ID` header
-- `POST /api/v1/reply-in-channel` endpoint:
-  - Parse JSON body: `{post_id: string, message: string}`
-  - Validate inputs (non-empty post_id and message)
-  - Fetch original post: `p.API.GetPost(postID)`
-  - Fetch original author: `p.API.GetUser(originalPost.UserId)`
-  - Verify acting user has access to the channel
-  - Format quoted reply message
-  - Create post with `p.API.CreatePost(&model.Post{UserId: actingUserID, ChannelId: originalPost.ChannelId, Message: formattedMessage})`
-  - Return 200 on success
-
-**`server/reply.go`**
-
-- `formatQuotedReply(authorUsername, originalMessage, replyText string) string`
-  - Truncate original message to ~200 chars if longer
-  - Replace newlines in the quoted portion so blockquote renders correctly
-  - Format: `> **@username**: original text\n\n reply text`
-  - Strip any existing blockquotes from original to avoid nested quotes
-
-#### Webapp (TypeScript/React)
-
-**`webapp/src/index.tsx`**
-
-- In `initialize(registry, store)`:
-  - Register root component (the reply modal)
-  - Register post dropdown menu action "Reply in Channel"
-  - Use closure pattern to capture post from filter callback
-  - Action dispatches a custom Redux action or uses a simple event emitter to open the modal with the captured post data
-
-**`webapp/src/components/ReplyModal.tsx`** (NEW)
-
-- React component rendering a modal overlay
-- Shows original message as read-only blockquote context (author name + message text, truncated if long)
-- Text area for the user's reply
-- Submit button -> POST to `/plugins/reply-in-channel/api/v1/reply-in-channel`
-- Cancel button -> close modal
-- Loading state while submitting
-- Error handling (show error message if server returns non-200)
-- On success: close modal (the new post will appear in the channel automatically via websocket)
-
-### Quote formatting details
-
-```go
-func formatQuotedReply(authorUsername, originalMessage, replyText string) string {
-    quoted := originalMessage
-    if len(quoted) > 200 {
-        quoted = quoted[:200] + "..."
-    }
-    // Ensure blockquote works across newlines
-    quoted = strings.ReplaceAll(quoted, "\n", "\n> ")
-    return fmt.Sprintf("> **@%s**: %s\n\n%s", authorUsername, quoted, replyText)
-}
-```
-
-### Security considerations
-
-- Always validate `Mattermost-User-ID` header is present (auth middleware)
-- Verify the acting user is a member of the channel before creating the post (use `p.API.GetChannelMember(channelId, userId)`)
-- Sanitize/validate post_id exists via `p.API.GetPost()`
-- Don't allow empty reply messages
+- Acting user is identified by the `Mattermost-User-ID` header (set by the Mattermost server)
+- The command only works in threads the user has access to
+- Posts are created as the acting user (no BOT tag)
 - Rate limiting is handled by Mattermost's built-in post creation limits
-
-### Build
-
-Same Makefile structure as the social previews plugin:
-
-- `make` - lint + test + dist
-- `make server` - compile Go
-- `make test` - run all tests
-- `make dist` - bundle plugin tar.gz
-- `make deploy` - deploy to Mattermost instance
-
-### Testing
-
-- Unit test `formatQuotedReply` with various inputs (short message, long message, multiline, messages with existing blockquotes)
-- Unit test the API endpoint with mock plugin API
-- Manual test: deploy, click "..." on a message, verify modal opens, submit reply, verify post appears in channel as the user with correct quote formatting
