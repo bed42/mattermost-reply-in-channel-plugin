@@ -85,3 +85,60 @@ func TestUpdateNewerRepliesLink(t *testing.T) {
 		assert.Equal(t, 1, strings.Count(result, "view newer replies"))
 	})
 }
+
+func TestExtractReplyFromChannelPost(t *testing.T) {
+	t.Run("extracts reply from channel post", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello world\n\nMy edited reply"
+		assert.Equal(t, "My edited reply", extractReplyFromChannelPost(msg))
+	})
+
+	t.Run("extracts reply with view newer replies link", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nMy reply\n\n[view newer replies](https://mm.example.com/t/pl/xyz)"
+		assert.Equal(t, "My reply", extractReplyFromChannelPost(msg))
+	})
+
+	t.Run("returns full message if no match", func(t *testing.T) {
+		msg := "just a plain message"
+		assert.Equal(t, "just a plain message", extractReplyFromChannelPost(msg))
+	})
+}
+
+func TestExtractReplyFromThreadPost(t *testing.T) {
+	t.Run("extracts reply from thread post", func(t *testing.T) {
+		msg := "My reply text\n\n> [Also sent to ~testing](https://mm.example.com/t/pl/abc)"
+		assert.Equal(t, "My reply text", extractReplyFromThreadPost(msg))
+	})
+
+	t.Run("returns full message if no suffix", func(t *testing.T) {
+		msg := "just a plain message"
+		assert.Equal(t, "just a plain message", extractReplyFromThreadPost(msg))
+	})
+}
+
+func TestReplaceReplyInChannelPost(t *testing.T) {
+	t.Run("replaces reply preserving header and quote", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello world\n\nOld reply"
+		result := replaceReplyInChannelPost(msg, "New reply")
+		assert.Equal(t, "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello world\n\nNew reply", result)
+	})
+
+	t.Run("preserves view newer replies link", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nOld reply\n\n[view newer replies](https://mm.example.com/t/pl/xyz)"
+		result := replaceReplyInChannelPost(msg, "New reply")
+		assert.Equal(t, "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nNew reply\n\n[view newer replies](https://mm.example.com/t/pl/xyz)", result)
+	})
+}
+
+func TestReplaceReplyInThreadPost(t *testing.T) {
+	t.Run("replaces reply preserving suffix", func(t *testing.T) {
+		msg := "Old reply\n\n> [Also sent to ~testing](https://mm.example.com/t/pl/abc)"
+		result := replaceReplyInThreadPost(msg, "New reply")
+		assert.Equal(t, "New reply\n\n> [Also sent to ~testing](https://mm.example.com/t/pl/abc)", result)
+	})
+
+	t.Run("replaces entire message if no suffix", func(t *testing.T) {
+		msg := "Old reply without suffix"
+		result := replaceReplyInThreadPost(msg, "New reply")
+		assert.Equal(t, "New reply", result)
+	})
+}

@@ -58,6 +58,54 @@ func formatChannelRef(channel *model.Channel, permalink string) string {
 	return fmt.Sprintf("[Also sent to %s](%s)", displayName, permalink)
 }
 
+// channelPostReplySeparator separates the header+quote from the reply text in a channel post.
+// The format is: "header\n> quote\n\nreply text[\n\n[view newer replies](...)]"
+var channelPostReplyPattern = regexp.MustCompile(`(?s)^(.*?\n> .*?\n\n)(.*?)(\n\n\[view newer replies\]\([^\)]+\))?$`)
+
+// threadPostSuffixPattern matches the "Also sent to" suffix in a thread post.
+var threadPostSuffixPattern = regexp.MustCompile(`\n\n> \[Also sent to [^\]]+\]\([^\)]+\)$`)
+
+// extractReplyFromChannelPost extracts the user's reply text from a formatted channel post.
+// Returns the text between the blockquote and the optional "view newer replies" link.
+func extractReplyFromChannelPost(message string) string {
+	matches := channelPostReplyPattern.FindStringSubmatch(message)
+	if matches == nil {
+		return message
+	}
+	return matches[2]
+}
+
+// extractReplyFromThreadPost extracts the user's reply text from a thread post.
+// Returns everything before the "Also sent to" suffix.
+func extractReplyFromThreadPost(message string) string {
+	loc := threadPostSuffixPattern.FindStringIndex(message)
+	if loc == nil {
+		return message
+	}
+	return message[:loc[0]]
+}
+
+// replaceReplyInChannelPost replaces the reply text in a channel post, preserving the
+// header, blockquote, and optional "view newer replies" link.
+func replaceReplyInChannelPost(message, newReplyText string) string {
+	matches := channelPostReplyPattern.FindStringSubmatch(message)
+	if matches == nil {
+		return message
+	}
+	// matches[1] = header + quote + \n\n, matches[3] = optional "view newer replies" link
+	return matches[1] + newReplyText + matches[3]
+}
+
+// replaceReplyInThreadPost replaces the reply text in a thread post, preserving the
+// "Also sent to" suffix.
+func replaceReplyInThreadPost(message, newReplyText string) string {
+	loc := threadPostSuffixPattern.FindStringIndex(message)
+	if loc == nil {
+		return newReplyText
+	}
+	return newReplyText + message[loc[0]:]
+}
+
 // newerRepliesPattern matches an existing "view newer replies" link so it can be replaced.
 var newerRepliesPattern = regexp.MustCompile(`\n\n\[view newer replies\]\([^\)]+\)`)
 

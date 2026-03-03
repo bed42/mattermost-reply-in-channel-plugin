@@ -147,6 +147,9 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 				p.API.LogWarn("Failed to update channel post with thread link", "error", updateErr.Error())
 			}
 		}
+
+		// Store bidirectional mapping so edits can be synced between the two posts
+		p.storePostPair(createdChannelPost.Id, createdThreadPost.Id)
 	}
 
 	return &model.CommandResponse{}, nil
@@ -193,6 +196,68 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 			p.API.LogWarn("Failed to update /ric channel post", "post_id", channelPostID, "error", updateErr.Error())
 		}
 	}
+}
+
+// MessageHasBeenUpdated syncs edits between paired /ric channel posts and thread posts.
+func (p *Plugin) MessageHasBeenUpdated(c *plugin.Context, newPost *model.Post, oldPost *model.Post) {
+	// Only care about message text changes
+	if newPost.Message == oldPost.Message {
+		return
+	}
+
+	// Look up the paired post
+	pairedPostID := p.getPairedPostID(newPost.Id)
+	if pairedPostID == "" {
+		return
+	}
+
+	pairedPost, appErr := p.API.GetPost(pairedPostID)
+	if appErr != nil {
+		p.API.LogWarn("Failed to get paired post for edit sync", "post_id", pairedPostID, "error", appErr.Error())
+		return
+	}
+
+	isChannelPost := newPost.GetProp("ric_thread_root_id") != nil
+
+	var newMessage string
+	if isChannelPost {
+		// User edited the channel post — extract the new reply text and update the thread post
+		newReplyText := extractReplyFromChannelPost(newPost.Message)
+		newMessage = replaceReplyInThreadPost(pairedPost.Message, newReplyText)
+	} else {
+		// User edited the thread post — extract the new reply text and update the channel post
+		newReplyText := extractReplyFromThreadPost(newPost.Message)
+		newMessage = replaceReplyInChannelPost(pairedPost.Message, newReplyText)
+	}
+
+	// Skip if the paired post already has the same message (prevents infinite loop)
+	if pairedPost.Message == newMessage {
+		return
+	}
+
+	pairedPost.Message = newMessage
+	if _, updateErr := p.API.UpdatePost(pairedPost); updateErr != nil {
+		p.API.LogWarn("Failed to sync edit to paired post", "post_id", pairedPostID, "error", updateErr.Error())
+	}
+}
+
+// storePostPair stores a bidirectional mapping between a channel post and its thread post.
+func (p *Plugin) storePostPair(channelPostID, threadPostID string) {
+	if appErr := p.API.KVSet("ric_pair:"+channelPostID, []byte(threadPostID)); appErr != nil {
+		p.API.LogWarn("Failed to store post pair mapping", "error", appErr.Error())
+	}
+	if appErr := p.API.KVSet("ric_pair:"+threadPostID, []byte(channelPostID)); appErr != nil {
+		p.API.LogWarn("Failed to store post pair mapping", "error", appErr.Error())
+	}
+}
+
+// getPairedPostID returns the paired post ID for a given post, or empty string if not found.
+func (p *Plugin) getPairedPostID(postID string) string {
+	data, appErr := p.API.KVGet("ric_pair:" + postID)
+	if appErr != nil || data == nil {
+		return ""
+	}
+	return string(data)
 }
 
 // kvKeyForThread returns the KV store key for a thread's /ric channel post mappings.
