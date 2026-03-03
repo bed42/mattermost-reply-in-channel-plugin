@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -85,6 +86,7 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		ChannelId: args.ChannelId,
 		Message:   formatQuotedReply(rootAuthor.Username, rootPost.Message, message, ""),
 	}
+	channelPost.AddProp("ric_thread_root_id", args.RootId)
 
 	// Attach recovered files to the channel post (use copies so originals go to thread)
 	if len(orphanedFileIds) > 0 {
@@ -104,6 +106,9 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 			Text:         "Failed to post reply in channel.",
 		}, nil
 	}
+
+	// Store mapping from thread root ID → channel post IDs so MessageHasBeenPosted can find them
+	p.addRicPostMapping(args.RootId, createdChannelPost.Id)
 
 	// Create the thread reply with a link to the channel post
 	channelPostLink := p.buildPermalink(createdChannelPost, args.UserId)
@@ -145,6 +150,85 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	}
 
 	return &model.CommandResponse{}, nil
+}
+
+// MessageHasBeenPosted updates /ric channel posts with a "view newer replies" link
+// when new replies are added to a thread that was previously shared via /ric.
+func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
+	// Only care about thread replies
+	if post.RootId == "" {
+		return
+	}
+
+	// Skip posts created by /ric (avoid update loops)
+	if post.GetProp("ric_thread_root_id") != nil {
+		return
+	}
+	if strings.Contains(post.Message, "Also sent to") {
+		return
+	}
+
+	// Look up channel posts created by /ric for this thread
+	channelPostIDs := p.getRicPostMappings(post.RootId)
+	if len(channelPostIDs) == 0 {
+		return
+	}
+
+	// Build permalink to the newest reply
+	permalink := p.buildPermalink(post, post.UserId)
+	if permalink == "" {
+		return
+	}
+
+	// Update each /ric channel post with the "view newer replies" link
+	for _, channelPostID := range channelPostIDs {
+		channelPost, appErr := p.API.GetPost(channelPostID)
+		if appErr != nil {
+			p.API.LogWarn("Failed to get /ric channel post", "post_id", channelPostID, "error", appErr.Error())
+			continue
+		}
+
+		channelPost.Message = updateNewerRepliesLink(channelPost.Message, permalink)
+		if _, updateErr := p.API.UpdatePost(channelPost); updateErr != nil {
+			p.API.LogWarn("Failed to update /ric channel post", "post_id", channelPostID, "error", updateErr.Error())
+		}
+	}
+}
+
+// kvKeyForThread returns the KV store key for a thread's /ric channel post mappings.
+func kvKeyForThread(rootID string) string {
+	return "ric:" + rootID
+}
+
+// addRicPostMapping appends a channel post ID to the list for a given thread root ID.
+func (p *Plugin) addRicPostMapping(rootID, channelPostID string) {
+	existing := p.getRicPostMappings(rootID)
+	existing = append(existing, channelPostID)
+
+	data, err := json.Marshal(existing)
+	if err != nil {
+		p.API.LogWarn("Failed to marshal /ric post mapping", "error", err.Error())
+		return
+	}
+
+	if appErr := p.API.KVSet(kvKeyForThread(rootID), data); appErr != nil {
+		p.API.LogWarn("Failed to save /ric post mapping", "error", appErr.Error())
+	}
+}
+
+// getRicPostMappings returns the list of channel post IDs for a given thread root ID.
+func (p *Plugin) getRicPostMappings(rootID string) []string {
+	data, appErr := p.API.KVGet(kvKeyForThread(rootID))
+	if appErr != nil || data == nil {
+		return nil
+	}
+
+	var postIDs []string
+	if err := json.Unmarshal(data, &postIDs); err != nil {
+		p.API.LogWarn("Failed to unmarshal /ric post mapping", "error", err.Error())
+		return nil
+	}
+	return postIDs
 }
 
 // OnDeactivate is invoked when the plugin is deactivated.

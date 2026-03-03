@@ -58,6 +58,18 @@ func formatChannelRef(channel *model.Channel, permalink string) string {
 	return fmt.Sprintf("[Also sent to %s](%s)", displayName, permalink)
 }
 
+// newerRepliesPattern matches an existing "view newer replies" link so it can be replaced.
+var newerRepliesPattern = regexp.MustCompile(`\n\n\[view newer replies\]\([^\)]+\)`)
+
+// updateNewerRepliesLink appends or replaces a "view newer replies" link on a channel post message.
+func updateNewerRepliesLink(message, permalink string) string {
+	link := fmt.Sprintf("\n\n[view newer replies](%s)", permalink)
+	if newerRepliesPattern.MatchString(message) {
+		return newerRepliesPattern.ReplaceAllString(message, link)
+	}
+	return message + link
+}
+
 // stripBlockquotes removes existing blockquote lines from a message to avoid nested quotes.
 func stripBlockquotes(message string) string {
 	lines := strings.Split(message, "\n")

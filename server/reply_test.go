@@ -64,3 +64,24 @@ func TestFormatQuotedReply(t *testing.T) {
 		assert.Equal(t, "[Replying to **@alice**'s thread](https://mm.example.com/myteam/pl/abc123):\n> Hello world\n\nMy reply", result)
 	})
 }
+
+func TestUpdateNewerRepliesLink(t *testing.T) {
+	t.Run("appends link when none exists", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nMy reply"
+		result := updateNewerRepliesLink(msg, "https://mm.example.com/t/pl/new123")
+		assert.Equal(t, msg+"\n\n[view newer replies](https://mm.example.com/t/pl/new123)", result)
+	})
+
+	t.Run("replaces existing link", func(t *testing.T) {
+		msg := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nMy reply\n\n[view newer replies](https://mm.example.com/t/pl/old456)"
+		result := updateNewerRepliesLink(msg, "https://mm.example.com/t/pl/new789")
+		expected := "[Replying to **@alice**'s thread](https://mm.example.com/t/pl/abc):\n> Hello\n\nMy reply\n\n[view newer replies](https://mm.example.com/t/pl/new789)"
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("does not duplicate link", func(t *testing.T) {
+		msg := "Some post\n\n[view newer replies](https://mm.example.com/t/pl/first)"
+		result := updateNewerRepliesLink(msg, "https://mm.example.com/t/pl/second")
+		assert.Equal(t, 1, strings.Count(result, "view newer replies"))
+	})
+}

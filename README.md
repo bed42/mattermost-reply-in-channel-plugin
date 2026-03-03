@@ -54,6 +54,7 @@ From within any thread, type:
 - **Blockquote stripping**: Existing blockquotes in the original message are stripped to avoid nested quotes
 - **Long message truncation**: Original messages over 200 characters are truncated in the quote
 - **Permalink support**: Both the channel post and thread reply include clickable links to each other
+- **Live "view newer replies" link**: When new replies are added to a thread that was shared via `/ric`, the channel post automatically updates with a "view newer replies" link pointing to the latest reply
 - **DM/GM support**: Works in direct messages and group messages (picks the user's first team for permalink construction)
 
 ## Building
@@ -83,6 +84,8 @@ This is a server-only plugin (no webapp component). All functionality is impleme
 
 - **Slash command** (`/ric`) registered in `OnActivate`
 - **`ExecuteCommand`** hook handles the command, creates posts via `p.API.CreatePost()`, and builds permalinks
+- **`MessageHasBeenPosted`** hook listens for new thread replies and updates `/ric` channel posts with a "view newer replies" link
+- **KV store** maps thread root IDs to `/ric` channel post IDs so the hook can find posts to update
 - **`formatQuotedReply`** handles message formatting (quoting, truncation, URL defanging, blockquote stripping)
 
 ### How the permalink dance works
