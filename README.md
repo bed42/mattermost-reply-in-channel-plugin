@@ -108,3 +108,7 @@ Since the channel post needs a link to the thread reply (and vice versa), and ne
 - The command only works in threads the user has access to
 - Posts are created as the acting user (no BOT tag)
 - Rate limiting is handled by Mattermost's built-in post creation limits
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
