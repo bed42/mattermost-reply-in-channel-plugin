@@ -241,6 +241,69 @@ func (p *Plugin) MessageHasBeenUpdated(c *plugin.Context, newPost *model.Post, o
 	}
 }
 
+// ReactionHasBeenAdded mirrors a reaction added to one /ric post onto its paired post,
+// attributed to the same user, so the channel post and thread post stay in sync.
+func (p *Plugin) ReactionHasBeenAdded(c *plugin.Context, reaction *model.Reaction) {
+	pairedPostID := p.getPairedPostID(reaction.PostId)
+	if pairedPostID == "" {
+		return
+	}
+
+	// Skip if the paired post already has this reaction (prevents infinite loop:
+	// mirroring an add re-fires this hook for the paired post).
+	if p.hasReaction(pairedPostID, reaction.UserId, reaction.EmojiName) {
+		return
+	}
+
+	mirror := &model.Reaction{
+		UserId:    reaction.UserId,
+		PostId:    pairedPostID,
+		EmojiName: reaction.EmojiName,
+		ChannelId: reaction.ChannelId, // both paired posts live in the same channel
+	}
+	if _, appErr := p.API.AddReaction(mirror); appErr != nil {
+		p.API.LogWarn("Failed to sync added reaction to paired post", "post_id", pairedPostID, "error", appErr.Error())
+	}
+}
+
+// ReactionHasBeenRemoved mirrors a reaction removal from one /ric post onto its paired post.
+func (p *Plugin) ReactionHasBeenRemoved(c *plugin.Context, reaction *model.Reaction) {
+	pairedPostID := p.getPairedPostID(reaction.PostId)
+	if pairedPostID == "" {
+		return
+	}
+
+	// Skip if the paired post no longer has this reaction (prevents infinite loop).
+	if !p.hasReaction(pairedPostID, reaction.UserId, reaction.EmojiName) {
+		return
+	}
+
+	mirror := &model.Reaction{
+		UserId:    reaction.UserId,
+		PostId:    pairedPostID,
+		EmojiName: reaction.EmojiName,
+		ChannelId: reaction.ChannelId,
+	}
+	if appErr := p.API.RemoveReaction(mirror); appErr != nil {
+		p.API.LogWarn("Failed to sync removed reaction from paired post", "post_id", pairedPostID, "error", appErr.Error())
+	}
+}
+
+// hasReaction reports whether postID already has a reaction with the given user and emoji.
+func (p *Plugin) hasReaction(postID, userID, emojiName string) bool {
+	reactions, appErr := p.API.GetReactions(postID)
+	if appErr != nil {
+		p.API.LogWarn("Failed to get reactions for paired post", "post_id", postID, "error", appErr.Error())
+		return false
+	}
+	for _, r := range reactions {
+		if r.UserId == userID && r.EmojiName == emojiName {
+			return true
+		}
+	}
+	return false
+}
+
 // storePostPair stores a bidirectional mapping between a channel post and its thread post.
 func (p *Plugin) storePostPair(channelPostID, threadPostID string) {
 	if appErr := p.API.KVSet("ric_pair:"+channelPostID, []byte(threadPostID)); appErr != nil {
