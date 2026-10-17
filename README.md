@@ -88,7 +88,9 @@ After enabling the plugin, its settings are under **System Console > Plugins > R
 
 | Setting | Default | Description |
 |---|---|---|
-| `BlockEchoReplies` — "Block replies to /ric echo posts" | `true` | Rejects the first reply typed into a `/ric` channel post's thread (with a link to the original thread) and refuses `/ric` inside such threads. Set to `false` to restore pre-1.1.0 behavior: stray replies post normally and `/ric` can be run from an echo thread. Changing this takes effect immediately, no restart needed. |
+| `BlockEchoReplies` — "Block replies to /ric echo posts" (dropdown) | *Install default* | Three choices: **Install default** — a **fresh install blocks** stray replies into `/ric` post threads, while an **upgraded install** (a server that already used `/ric` with an earlier version) keeps its previous non-blocking behavior; **Always block** / **Never block** — force either behavior permanently, surviving future upgrades. Either way, echo threads that already have replies are never sealed. Changing this takes effect immediately, no restart needed. |
+
+Technically: at its first activation this version writes a `ric_guard_mode` marker into its own KV store, classifying the install by whether legacy `/ric` KV data (`ric:` / `ric_pair:` mapping keys) predates it. KV stores survive plugin upgrades and start empty on genuinely fresh servers — note they even survive `mmctl plugin delete` (verified on Mattermost 11.7), so delete + re-upload is still an "upgrade". One edge case: an older install that *never used* `/ric` at all looks identical to a fresh one and gets blocking — harmless, since no echo posts exist to block. To change an already-classified install's default, set `BlockEchoReplies` explicitly (or delete the `ric_guard_mode` KV row to force reclassification).
 
 ## Architecture
 

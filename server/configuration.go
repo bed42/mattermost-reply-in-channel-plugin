@@ -7,18 +7,12 @@ import (
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
 // configuration, as well as values computed from the configuration.
 type configuration struct {
-	// BlockEchoReplies controls the echo-thread guard: rejecting the first
-	// reply typed into a /ric channel post's thread, and refusing /ric from
-	// inside such threads. Matches the "BlockEchoReplies" settings_schema
-	// key. It is a *bool because a fresh install has no plugin-settings
-	// entry at all: nil must mean ENABLED (the schema default), not Go's
-	// zero value false.
-	BlockEchoReplies *bool
-}
-
-// blockEchoReplies resolves the tri-state configuration: unset means enabled.
-func (c *configuration) blockEchoReplies() bool {
-	return c.BlockEchoReplies == nil || *c.BlockEchoReplies
+	// BlockEchoReplies is the explicit admin override for the echo-thread
+	// guard, as a tri-state dropdown ("" / "true" / "false") so the UI can
+	// express "use the install default" instead of forcing a choice.
+	// "" means unset: the per-install default resolved at activation applies
+	// (fresh installs block, upgrades of installs with /ric history do not).
+	BlockEchoReplies string
 }
 
 // Clone shallow copies the configuration.

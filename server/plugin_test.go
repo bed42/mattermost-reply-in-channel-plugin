@@ -98,15 +98,23 @@ func expectPermalinkEnv(api *plugintest.API) {
 func newTestPlugin(api *plugintest.API) *Plugin {
 	p := &Plugin{}
 	p.SetAPI(api)
+	// The hooks read guardDefaultOn, which production resolves during
+	// OnActivate. These tests call hooks directly, so simulate the
+	// "guard on" resolved state; classification has its own tests.
+	p.guardDefaultOn.Store(true)
 	return p
 }
 
 // newTestPluginWithBlocking returns a plugin with the BlockEchoReplies
-// settings toggle pinned on/off, instead of the unset (default-on) state
-// newTestPlugin leaves.
+// dropdown pinned to an explicit "true"/"false" choice, instead of the
+// "" install-default state newTestPlugin leaves.
 func newTestPluginWithBlocking(api *plugintest.API, on bool) *Plugin {
 	p := newTestPlugin(api)
-	p.setConfiguration(&configuration{BlockEchoReplies: &on})
+	choice := "false"
+	if on {
+		choice = "true"
+	}
+	p.setConfiguration(&configuration{BlockEchoReplies: choice})
 	return p
 }
 
@@ -367,19 +375,115 @@ func TestRicFromStrayThreadRejected(t *testing.T) {
 	api.AssertNotCalled(t, "GetUser", mock.Anything)
 }
 
-// The BlockEchoReplies setting is a *bool so a fresh install (no plugin-settings
-// entry at all) keeps the guard ENABLED, matching the settings_schema default.
-func TestBlockEchoRepliesTriState(t *testing.T) {
-	var unset configuration
-	assert.True(t, unset.blockEchoReplies(), "unset config keeps the guard on")
+// The echo-guard default is decided once per install at activation:
+// fresh install blocks, upgrades of installs with /ric KV history do not.
+func TestFreshInstallDefaultsToBlocking(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVGet", guardModeKey).Return(nil, nil) // no marker yet
+	api.On("KVList", 0, 200).Return([]string{}, nil)
+	api.On("KVSetWithOptions", guardModeKey, []byte(guardModeBlock),
+		model.PluginKVSetOptions{Atomic: true}).Return(true, nil)
+	api.On("RegisterCommand", mock.Anything).Return(nil)
+	allowLogging(api)
 
-	off := false
-	disabled := configuration{BlockEchoReplies: &off}
-	assert.False(t, disabled.blockEchoReplies())
+	p := newTestPlugin(api)
+	if err := p.OnActivate(); err != nil {
+		t.Fatalf("OnActivate: %v", err)
+	}
+	assert.True(t, p.echoGuardEnabled(), "fresh install defaults to blocking")
+	api.AssertCalled(t, "KVSetWithOptions", guardModeKey, []byte(guardModeBlock), mock.Anything)
+}
 
-	on := true
-	enabled := configuration{BlockEchoReplies: &on}
-	assert.True(t, enabled.blockEchoReplies())
+func TestUpgradeWithRicHistoryDefaultsToAllowing(t *testing.T) {
+	// Legacy "ric:"/"ric_pair:" keys can only have been written by a
+	// pre-guard version: the KV store predates this install => upgrade.
+	api := &plugintest.API{}
+	api.On("KVGet", guardModeKey).Return(nil, nil)
+	api.On("KVList", 0, 200).Return([]string{"some_unrelated_key", "ric_pair:post1"}, nil)
+	api.On("KVSetWithOptions", guardModeKey, []byte(guardModeAllow),
+		model.PluginKVSetOptions{Atomic: true}).Return(true, nil)
+	api.On("RegisterCommand", mock.Anything).Return(nil)
+	allowLogging(api)
+
+	p := newTestPlugin(api)
+	if err := p.OnActivate(); err != nil {
+		t.Fatalf("OnActivate: %v", err)
+	}
+	assert.False(t, p.echoGuardEnabled(), "upgraded install with /ric history keeps old (non-blocking) behavior")
+	api.AssertCalled(t, "KVSetWithOptions", guardModeKey, []byte(guardModeAllow), mock.Anything)
+}
+
+func TestStoredMarkerDecidesDefaultOnLaterActivations(t *testing.T) {
+	t.Run("allow", func(t *testing.T) {
+		api := &plugintest.API{}
+		api.On("KVGet", guardModeKey).Return([]byte(guardModeAllow), nil)
+		api.On("RegisterCommand", mock.Anything).Return(nil)
+		allowLogging(api)
+
+		p := newTestPlugin(api)
+		if err := p.OnActivate(); err != nil {
+			t.Fatalf("OnActivate: %v", err)
+		}
+		assert.False(t, p.echoGuardEnabled())
+		// Classification already happened: no re-scan, no re-write.
+		api.AssertNotCalled(t, "KVList", mock.Anything, mock.Anything)
+		api.AssertNotCalled(t, "KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("block", func(t *testing.T) {
+		api := &plugintest.API{}
+		api.On("KVGet", guardModeKey).Return([]byte(guardModeBlock), nil)
+		api.On("RegisterCommand", mock.Anything).Return(nil)
+		allowLogging(api)
+
+		p := newTestPlugin(api)
+		if err := p.OnActivate(); err != nil {
+			t.Fatalf("OnActivate: %v", err)
+		}
+		assert.True(t, p.echoGuardEnabled())
+		api.AssertNotCalled(t, "KVList", mock.Anything, mock.Anything)
+	})
+}
+
+func TestExplicitSettingOverridesInstallDefault(t *testing.T) {
+	t.Run("setting on beats allow-default", func(t *testing.T) {
+		api := &plugintest.API{}
+		api.On("KVGet", guardModeKey).Return([]byte(guardModeAllow), nil)
+		api.On("RegisterCommand", mock.Anything).Return(nil)
+		allowLogging(api)
+
+		p := newTestPlugin(api)
+		if err := p.OnActivate(); err != nil {
+			t.Fatalf("OnActivate: %v", err)
+		}
+		p.setConfiguration(&configuration{BlockEchoReplies: "true"})
+		assert.True(t, p.echoGuardEnabled())
+	})
+
+	t.Run("setting off beats block-default", func(t *testing.T) {
+		api := &plugintest.API{}
+		allowLogging(api)
+
+		p := newTestPlugin(api) // guardDefaultOn preset true
+		p.setConfiguration(&configuration{BlockEchoReplies: "false"})
+		assert.False(t, p.echoGuardEnabled())
+	})
+}
+
+func TestKVFailureDuringClassificationKeepsBlocking(t *testing.T) {
+	// If the marker cannot be read at all, fall back to the safe
+	// (current-behavior) default: block.
+	api := &plugintest.API{}
+	api.On("KVGet", guardModeKey).Return(nil, model.NewAppError("KVGet", "plugin_kv.get.app_error", nil, "", 500))
+	api.On("RegisterCommand", mock.Anything).Return(nil)
+	allowLogging(api)
+
+	p := newTestPlugin(api)
+	if err := p.OnActivate(); err != nil {
+		t.Fatalf("OnActivate: %v", err)
+	}
+	assert.True(t, p.echoGuardEnabled())
+	api.AssertNotCalled(t, "KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestBlockingDisabledLetsStrayReplyThrough(t *testing.T) {

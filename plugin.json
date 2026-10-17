@@ -23,9 +23,23 @@
       {
         "key": "BlockEchoReplies",
         "display_name": "Block replies to /ric echo posts",
-        "type": "bool",
-        "help_text": "When true (default), the first reply typed into the thread of a /ric channel post is rejected before it is saved, with a link to the original thread, and /ric is refused inside such threads. Echo threads that already have replies are never sealed. Set false to restore pre-1.1.0 behavior.",
-        "default": true
+        "type": "dropdown",
+        "options": [
+          {
+            "display_name": "Install default (fresh install: block; upgraded install: allow)",
+            "value": ""
+          },
+          {
+            "display_name": "Always block replies to /ric echo posts",
+            "value": "true"
+          },
+          {
+            "display_name": "Never block replies to /ric echo posts",
+            "value": "false"
+          }
+        ],
+        "help_text": "The echo-thread guard rejects the first reply typed into the thread of a /ric channel post (with a link to the original thread) and refuses /ric inside such threads. Install default: fresh installs block, while installs upgraded from a version without this feature keep their previous non-blocking behavior. The two explicit choices override that and survive all future upgrades. Either way, echo threads that already have replies are never sealed.",
+        "default": ""
       }
     ]
   }
