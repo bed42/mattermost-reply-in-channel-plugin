@@ -10,6 +10,9 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
+// ricThreadRootIDProp links a /ric channel echo post to the root of the thread it echoes.
+const ricThreadRootIDProp = "ric_thread_root_id"
+
 // Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
 type Plugin struct {
 	plugin.MattermostPlugin
@@ -66,6 +69,26 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		}, nil
 	}
 
+	// If this command was issued from the stray thread hanging off a /ric echo
+	// post, refuse: promoting that stray thread would seal the original thread
+	// further away from the user. Send them to the original instead.
+	if originalRootID, _ := rootPost.GetProp(ricThreadRootIDProp).(string); originalRootID != "" {
+		text := "The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post."
+		if originalRootID != rootPost.Id {
+			text += " Run `/ric` in the original thread instead — the link is in the post header above."
+			if permalink, ok := p.echoOriginalPermalink(originalRootID, args.UserId); ok && permalink != "" {
+				text = fmt.Sprintf("The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post. Run `/ric` in the [original thread](%s) instead.", permalink)
+			}
+		} else {
+			// Self-referencing prop (manual DB edit/import artifact): flag it.
+			p.API.LogWarn("ric: thread root's ric_thread_root_id points at itself (should not happen)", "root_id", rootPost.Id)
+		}
+		return &model.CommandResponse{
+			ResponseType: model.CommandResponseTypeEphemeral,
+			Text:         text,
+		}, nil
+	}
+
 	// Get the root post author
 	rootAuthor, appErr := p.API.GetUser(rootPost.UserId)
 	if appErr != nil {
@@ -86,7 +109,7 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		ChannelId: args.ChannelId,
 		Message:   formatQuotedReply(rootAuthor.Username, rootPost.Message, message, ""),
 	}
-	channelPost.AddProp("ric_thread_root_id", args.RootId)
+	channelPost.AddProp(ricThreadRootIDProp, args.RootId)
 
 	// Attach recovered files to the channel post (use copies so originals go to thread)
 	if len(orphanedFileIds) > 0 {
@@ -155,6 +178,104 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	return &model.CommandResponse{}, nil
 }
 
+// echoOriginalPermalink builds a permalink to the original thread root an echo
+// post refers to. It returns ok=false when the original root is deleted or
+// cannot be loaded: a link to a dead thread is noise, and the echo post's own
+// header carries the same link as a fallback pointer.
+func (p *Plugin) echoOriginalPermalink(originalRootID, actingUserID string) (string, bool) {
+	originalRoot, appErr := p.API.GetPost(originalRootID)
+	if appErr != nil {
+		p.API.LogWarn("ric: could not load original thread root", "original_root_id", originalRootID, "error", appErr.Error())
+		return "", false
+	}
+	if originalRoot.DeleteAt != 0 {
+		// GetPost returns deleted posts without error; DeleteAt is the only tell.
+		return "", false
+	}
+	return p.buildPermalink(originalRoot, actingUserID), true
+}
+
+// MessageWillBePosted rejects replies typed into the stray thread that hangs
+// off a /ric echo post: those replies belong to the original thread the echo
+// post mirrors. The hook runs BEFORE persistence (v11.7.0 CreatePost), so a
+// rejection leaves no half-committed state; the server prefixes the reason
+// with "Post rejected by plugin. " and shows it to the sender.
+//
+// Blocking applies to EMPTY echo threads: the first stray reply is rejected
+// with a permalink to the original thread (or the echo post's header link
+// when the original is deleted/unloadable). An echo thread that already has
+// replies predates this version — it continues and fades out instead of
+// being sealed mid-conversation.
+func (p *Plugin) MessageWillBePosted(c *plugin.Context, post *model.Post) (*model.Post, string) {
+	if post.RootId == "" {
+		return post, "" // channel-level post, never a reply to an echo post
+	}
+
+	root, appErr := p.API.GetPost(post.RootId)
+	if appErr != nil {
+		// Fail open: we cannot tell whether this thread root is an echo post.
+		p.API.LogWarn("ric block: failed to load thread root, allowing post", "root_id", post.RootId, "error", appErr.Error())
+		return post, ""
+	}
+
+	originalRootID, _ := root.GetProp(ricThreadRootIDProp).(string)
+	if originalRootID == "" {
+		return post, "" // regular thread reply
+	}
+	if originalRootID == root.Id {
+		p.API.LogWarn("ric block: thread root's ric_thread_root_id points at itself (should not happen)", "post_id", post.Id, "root_id", post.RootId)
+		return p.rejectEchoReply(post, "Replies to this message are not allowed — this thread's root was created by the /ric command", "")
+	}
+
+	reason := "Replies to this message belong to the original thread"
+	permalink, havePermalink := p.echoOriginalPermalink(originalRootID, post.UserId)
+	if havePermalink && permalink != "" {
+		reason += ": " + permalink
+	} else {
+		permalink = ""
+		reason += " — the header of this thread's first message links to it"
+	}
+
+	// Legacy exemption: an echo thread that ALREADY has replies predates this
+	// version (or was typed while the plugin was disabled). Sealing it would
+	// interrupt a conversation that exists, so let it continue and fade out.
+	// The block therefore only ever stops the FIRST stray reply — new stray
+	// threads can never start.
+	thread, threadErr := p.API.GetPostThread(post.RootId)
+	if threadErr == nil && len(thread.Order) > 1 { // Order lists every post in the thread, root included
+		return post, ""
+	}
+	if threadErr != nil {
+		// Fail closed: unlike the GetPost(RootId) miss above (where we cannot
+		// tell echo from regular), we already know this is an echo thread —
+		// wrongly allowing a first reply creates a permanent stray thread,
+		// while wrongly blocking costs the sender one retry.
+		p.API.LogWarn("ric block: failed to load echo thread, rejecting post", "root_id", post.RootId, "error", threadErr.Error())
+	}
+	return p.rejectEchoReply(post, reason, permalink)
+}
+
+// rejectEchoReply blocks a stray reply with the given reason AND mirrors the
+// explanation into the echo thread as an ephemeral post (visible only to the
+// sender, never persisted). The failed-post UI alone shows only Retry/Cancel
+// — the reason string is too easy to miss, so the sender also gets a note
+// with a direct link right where they were typing.
+func (p *Plugin) rejectEchoReply(post *model.Post, reason, permalink string) (*model.Post, string) {
+	help := "Your reply was not posted. This thread hangs off a `/ric` channel post — "
+	if permalink != "" {
+		help += "reply in the [original thread](" + permalink + ") instead, or use `/ric` from there to share replies back here."
+	} else {
+		help += "use the link in the header of this thread's first message to reach the original thread, and reply there."
+	}
+	p.API.SendEphemeralPost(post.UserId, &model.Post{
+		UserId:    post.UserId,
+		ChannelId: post.ChannelId,
+		RootId:    post.RootId, // note appears in the very thread they typed into
+		Message:   help,
+	})
+	return nil, reason
+}
+
 // MessageHasBeenPosted updates /ric channel posts with a "view newer replies" link
 // when new replies are added to a thread that was previously shared via /ric.
 func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
@@ -164,7 +285,7 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 	}
 
 	// Skip posts created by /ric (avoid update loops)
-	if post.GetProp("ric_thread_root_id") != nil {
+	if post.GetProp(ricThreadRootIDProp) != nil {
 		return
 	}
 	if strings.Contains(post.Message, "Also sent to") {
@@ -217,7 +338,7 @@ func (p *Plugin) MessageHasBeenUpdated(c *plugin.Context, newPost *model.Post, o
 		return
 	}
 
-	isChannelPost := newPost.GetProp("ric_thread_root_id") != nil
+	isChannelPost := newPost.GetProp(ricThreadRootIDProp) != nil
 
 	var newMessage string
 	if isChannelPost {
