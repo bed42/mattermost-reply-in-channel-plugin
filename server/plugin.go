@@ -14,14 +14,14 @@ import (
 // ricThreadRootIDProp links a /ric channel echo post to the root of the thread it echoes.
 const ricThreadRootIDProp = "ric_thread_root_id"
 
-// Echo-reply guard defaults. A fresh install blocks stray replies to /ric
-// echo posts; an upgrade of an install that already used /ric does not, so
-// existing deployments keep the behavior they were running before. The
-// distinction is made on the plugin's own KV store, which survives upgrades
-// but starts empty on a fresh install: only older versions' /ric usage
-// writes "ric:" / "ric_pair:" keys before this build ever runs. (An install
-// that never used /ric is indistinguishable from fresh and gets blocking —
-// harmless, since no echo posts can exist to block.)
+// Echo-reply guard state model (canonical explanation; other comments defer
+// to this one). The guard's effective mode = admin setting if set, else the
+// per-install default. The default is inferred once, at first activation of
+// this build: the plugin's KV store starts empty on a fresh install but
+// survives upgrades and already holds "ric:" / "ric_pair:" mapping keys if
+// an older version ran here, so key presence tells fresh apart from upgrade.
+// (An older install that never used /ric looks fresh and gets blocking —
+// harmless, since no echo posts exist to block.)
 const (
 	guardModeKey    = "ric_guard_mode" // deliberately not matching the legacy prefixes below
 	guardModeBlock  = "block"
@@ -40,9 +40,8 @@ type Plugin struct {
 	// configuration is the active plugin configuration.
 	configuration *configuration
 
-	// guardDefaultOn is the per-install echo-guard default resolved during
-	// OnActivate (fresh install => true, upgraded install with /ric history
-	// => false). Only consulted when BlockEchoReplies is not explicitly set.
+	// guardDefaultOn is the per-install default, resolved by
+	// resolveGuardMode during OnActivate.
 	guardDefaultOn atomic.Bool
 }
 
@@ -68,14 +67,15 @@ func (p *Plugin) OnActivate() error {
 	return nil
 }
 
-// resolveGuardMode decides, once per install (not per upgrade), whether the
-// echo-reply guard defaults to on. It runs in OnActivate, where the KV store
-// is available but hooks have not started yet:
-//   - marker present  -> a previous activation of this build already decided; use it
-//   - legacy KV keys    -> this KV predates the guard: an upgrade, default off
-//   - no keys at all    -> fresh install, default on
+// resolveGuardMode infers the per-install default (see the guardModeKey
+// comment) and records it in KV, so the decision is frozen at first
+// activation and never re-derived. It runs in OnActivate: KV is available,
+// hooks are not. Cases:
+//   - marker present -> reuse it (no scan, no write)
+//   - legacy keys    -> upgrade: default allow
+//   - no keys at all -> fresh: default block
 //
-// The marker is written with an atomic create-if-absent CAS so concurrent
+// The marker write is an atomic create-if-absent CAS so concurrent
 // activations on cluster peers cannot disagree about what they stored.
 func (p *Plugin) resolveGuardMode() {
 	// Default to blocking: any unresolved state keeps the safe (current) behavior.
@@ -91,7 +91,7 @@ func (p *Plugin) resolveGuardMode() {
 		return
 	}
 
-	// Classify: legacy keys => an upgrade that already used /ric => don't block.
+	// Classify by KV contents (see the guardModeKey comment).
 	value := guardModeAllow
 	if !p.hasLegacyRicData() {
 		value = guardModeBlock
@@ -150,10 +150,8 @@ func (p *Plugin) hasLegacyRicData() bool {
 	return true
 }
 
-// echoGuardEnabled resolves the effective echo-reply guard state:
-// an explicit BlockEchoReplies dropdown choice always wins; otherwise the
-// per-install default resolved at activation (fresh install blocks, upgraded
-// install with /ric history does not).
+// echoGuardEnabled is the guard's single read point: admin override if set,
+// else the per-install default.
 func (p *Plugin) echoGuardEnabled() bool {
 	switch p.getConfiguration().BlockEchoReplies {
 	case "true":
@@ -198,8 +196,7 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	// If this command was issued from the stray thread hanging off a /ric echo
 	// post, refuse: promoting that stray thread would seal the original thread
 	// further away from the user. Send them to the original instead.
-	// Part of the echo-thread guard; skipped when the guard is off (explicit
-	// setting or upgrade default).
+	// Part of the echo-thread guard; skipped when the guard is off.
 	if p.echoGuardEnabled() {
 		if originalRootID, _ := rootPost.GetProp(ricThreadRootIDProp).(string); originalRootID != "" {
 			text := "The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post."
@@ -337,12 +334,11 @@ func (p *Plugin) echoOriginalPermalink(originalRootID, actingUserID string) (str
 // replies predates this version — it continues and fades out instead of
 // being sealed mid-conversation.
 //
-// The whole guard is controlled by the BlockEchoReplies setting (default
-// true); when disabled the hook passes everything through without any
-// lookups.
+// The whole guard is behind echoGuardEnabled; when off the hook passes
+// everything through without any lookups.
 func (p *Plugin) MessageWillBePosted(c *plugin.Context, post *model.Post) (*model.Post, string) {
 	if !p.echoGuardEnabled() {
-		return post, "" // echo-thread guard off (explicit setting or upgrade default)
+		return post, "" // guard off
 	}
 	if post.RootId == "" {
 		return post, "" // channel-level post, never a reply to an echo post

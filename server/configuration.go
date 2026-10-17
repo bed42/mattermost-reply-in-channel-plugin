@@ -7,11 +7,10 @@ import (
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
 // configuration, as well as values computed from the configuration.
 type configuration struct {
-	// BlockEchoReplies is the explicit admin override for the echo-thread
-	// guard, as a tri-state dropdown ("" / "true" / "false") so the UI can
-	// express "use the install default" instead of forcing a choice.
-	// "" means unset: the per-install default resolved at activation applies
-	// (fresh installs block, upgrades of installs with /ric history do not).
+	// BlockEchoReplies is the admin override for the echo-reply guard,
+	// mirrored from the tri-state settings_schema dropdown of the same key:
+	// "true"/"false" force the guard, "" defers to the per-install default
+	// (resolveGuardMode).
 	BlockEchoReplies string
 }
 
