@@ -72,21 +72,24 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	// If this command was issued from the stray thread hanging off a /ric echo
 	// post, refuse: promoting that stray thread would seal the original thread
 	// further away from the user. Send them to the original instead.
-	if originalRootID, _ := rootPost.GetProp(ricThreadRootIDProp).(string); originalRootID != "" {
-		text := "The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post."
-		if originalRootID != rootPost.Id {
-			text += " Run `/ric` in the original thread instead — the link is in the post header above."
-			if permalink, ok := p.echoOriginalPermalink(originalRootID, args.UserId); ok && permalink != "" {
-				text = fmt.Sprintf("The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post. Run `/ric` in the [original thread](%s) instead.", permalink)
+	// Part of the echo-thread guard; skipped when BlockEchoReplies is off.
+	if p.getConfiguration().blockEchoReplies() {
+		if originalRootID, _ := rootPost.GetProp(ricThreadRootIDProp).(string); originalRootID != "" {
+			text := "The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post."
+			if originalRootID != rootPost.Id {
+				text += " Run `/ric` in the original thread instead — the link is in the post header above."
+				if permalink, ok := p.echoOriginalPermalink(originalRootID, args.UserId); ok && permalink != "" {
+					text = fmt.Sprintf("The `/ric` command cannot be used in this thread — it hangs off a `/ric` channel post. Run `/ric` in the [original thread](%s) instead.", permalink)
+				}
+			} else {
+				// Self-referencing prop (manual DB edit/import artifact): flag it.
+				p.API.LogWarn("ric: thread root's ric_thread_root_id points at itself (should not happen)", "root_id", rootPost.Id)
 			}
-		} else {
-			// Self-referencing prop (manual DB edit/import artifact): flag it.
-			p.API.LogWarn("ric: thread root's ric_thread_root_id points at itself (should not happen)", "root_id", rootPost.Id)
+			return &model.CommandResponse{
+				ResponseType: model.CommandResponseTypeEphemeral,
+				Text:         text,
+			}, nil
 		}
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         text,
-		}, nil
 	}
 
 	// Get the root post author
@@ -206,7 +209,14 @@ func (p *Plugin) echoOriginalPermalink(originalRootID, actingUserID string) (str
 // when the original is deleted/unloadable). An echo thread that already has
 // replies predates this version — it continues and fades out instead of
 // being sealed mid-conversation.
+//
+// The whole guard is controlled by the BlockEchoReplies setting (default
+// true); when disabled the hook passes everything through without any
+// lookups.
 func (p *Plugin) MessageWillBePosted(c *plugin.Context, post *model.Post) (*model.Post, string) {
+	if !p.getConfiguration().blockEchoReplies() {
+		return post, "" // echo-thread guard disabled in the plugin settings
+	}
 	if post.RootId == "" {
 		return post, "" // channel-level post, never a reply to an echo post
 	}

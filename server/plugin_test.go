@@ -101,6 +101,15 @@ func newTestPlugin(api *plugintest.API) *Plugin {
 	return p
 }
 
+// newTestPluginWithBlocking returns a plugin with the BlockEchoReplies
+// settings toggle pinned on/off, instead of the unset (default-on) state
+// newTestPlugin leaves.
+func newTestPluginWithBlocking(api *plugintest.API, on bool) *Plugin {
+	p := newTestPlugin(api)
+	p.setConfiguration(&configuration{BlockEchoReplies: &on})
+	return p
+}
+
 // logMethods are the plugin API's logging methods, in level order.
 var logMethods = []string{"LogDebug", "LogInfo", "LogWarn", "LogError"}
 
@@ -356,6 +365,61 @@ func TestRicFromStrayThreadRejected(t *testing.T) {
 	api.AssertNotCalled(t, "CreatePost", mock.Anything)
 	api.AssertNotCalled(t, "KVSet", mock.Anything, mock.Anything)
 	api.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+// The BlockEchoReplies setting is a *bool so a fresh install (no plugin-settings
+// entry at all) keeps the guard ENABLED, matching the settings_schema default.
+func TestBlockEchoRepliesTriState(t *testing.T) {
+	var unset configuration
+	assert.True(t, unset.blockEchoReplies(), "unset config keeps the guard on")
+
+	off := false
+	disabled := configuration{BlockEchoReplies: &off}
+	assert.False(t, disabled.blockEchoReplies())
+
+	on := true
+	enabled := configuration{BlockEchoReplies: &on}
+	assert.True(t, enabled.blockEchoReplies())
+}
+
+func TestBlockingDisabledLetsStrayReplyThrough(t *testing.T) {
+	// With the setting off, the hook is inert: the stray reply posts normally
+	// and no echo-thread inspection happens at all.
+	api := &plugintest.API{}
+	allowLogging(api)
+
+	reply := newStrayReply()
+	out, reason := newTestPluginWithBlocking(api, false).MessageWillBePosted(nil, reply)
+
+	assert.Same(t, reply, out)
+	assert.Empty(t, reason)
+	api.AssertNotCalled(t, "GetPost", mock.Anything)
+	api.AssertNotCalled(t, "SendEphemeralPost", mock.Anything, mock.Anything)
+}
+
+func TestBlockingDisabledAllowsRicInEchoThread(t *testing.T) {
+	// The /ric refusal inside echo threads is part of the same guard: with the
+	// setting off, the command falls through to the normal flow. The mocked
+	// GetUser failure ("Could not find the original author") proves execution
+	// passed the guard instead of being refused as an echo thread.
+	api := &plugintest.API{}
+	api.On("GetPost", echoID).Return(newEchoPost(), nil)
+	api.On("GetFileInfos", mock.Anything, mock.Anything, mock.Anything).Return([]*model.FileInfo{}, nil)
+	api.On("GetUser", echoAuthor).Return(nil, model.NewAppError("GetUser", "store.sql_user.get.app_error", nil, "", 500))
+	allowLogging(api)
+
+	args := &model.CommandArgs{
+		Command:   "/ric from an echo thread with blocking off",
+		UserId:    replier,
+		ChannelId: chanID,
+		RootId:    echoID,
+	}
+	resp, appErr := newTestPluginWithBlocking(api, false).ExecuteCommand(nil, args)
+
+	assert.Nil(t, appErr)
+	assert.NotNil(t, resp)
+	assert.NotContains(t, resp.Text, "cannot be used in this thread", "echo-thread refusal is part of the disabled guard")
+	assert.Contains(t, resp.Text, "Could not find the original author", "command proceeded past the guard")
 }
 
 func TestRicFromSelfReferencingEchoThreadRejected(t *testing.T) {

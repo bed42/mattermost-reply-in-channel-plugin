@@ -19,6 +19,14 @@
   "settings_schema": {
     "header": "",
     "footer": "",
-    "settings": []
+    "settings": [
+      {
+        "key": "BlockEchoReplies",
+        "display_name": "Block replies to /ric echo posts",
+        "type": "bool",
+        "help_text": "When true (default), the first reply typed into the thread of a /ric channel post is rejected before it is saved, with a link to the original thread, and /ric is refused inside such threads. Echo threads that already have replies are never sealed. Set false to restore pre-1.1.0 behavior.",
+        "default": true
+      }
+    ]
   }
 }
