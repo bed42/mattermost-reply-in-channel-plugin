@@ -396,7 +396,7 @@ func (p *Plugin) MessageWillBePosted(c *plugin.Context, post *model.Post) (*mode
 func (p *Plugin) rejectEchoReply(post *model.Post, reason, permalink string) (*model.Post, string) {
 	help := "Your reply was not posted. This thread hangs off a `/ric` channel post — "
 	if permalink != "" {
-		help += "reply in the [original thread](" + permalink + ") instead, or use `/ric` from there to share replies back here."
+		help += "reply in the [original thread](" + permalink + ") instead."
 	} else {
 		help += "use the link in the header of this thread's first message to reach the original thread, and reply there."
 	}
