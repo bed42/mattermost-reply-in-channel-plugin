@@ -7,6 +7,11 @@ import (
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
 // configuration, as well as values computed from the configuration.
 type configuration struct {
+	// BlockEchoReplies is the admin override for the echo-reply guard,
+	// mirrored from the tri-state settings_schema dropdown of the same key:
+	// "true"/"false" force the guard, "" defers to the per-install default
+	// (resolveGuardMode).
+	BlockEchoReplies string
 }
 
 // Clone shallow copies the configuration.

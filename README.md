@@ -43,6 +43,7 @@ From within any thread, type:
 ```
 
 - Must be used from within a thread (not the main channel)
+- Cannot be used inside the thread of a `/ric` channel post — run it in the original thread instead (its link is in the post header)
 - The message cannot be empty
 - Supports full Mattermost markdown, emoji, etc. in your reply
 - File attachments are forwarded on a best-effort basis (see Limitations below)
@@ -50,12 +51,14 @@ From within any thread, type:
 ## Features
 
 - **Cross-platform**: Works on web, desktop, and mobile (it's a server-side slash command)
+- **Reply blocking**: the first reply typed into a `/ric` channel post's thread is rejected before it's saved; the sender gets a direct link to the original thread — in the rejection message *and* as an in-thread note only they can see (the failed-post "Retry/Cancel" UI alone is too easy to miss). `/ric` itself is also refused inside such threads. Can be turned off in the plugin settings — see [Configuration](#configuration)
 - **URL defanging**: URLs in the quoted original message are wrapped in backticks to prevent duplicate link previews
 - **Blockquote stripping**: Existing blockquotes in the original message are stripped to avoid nested quotes
 - **Long message truncation**: Original messages over 200 characters are truncated in the quote
 - **Permalink support**: Both the channel post and thread reply include clickable links to each other
 - **Live "view newer replies" link**: When new replies are added to a thread that was shared via `/ric`, the channel post automatically updates with a "view newer replies" link pointing to the latest reply
 - **Bidirectional edit sync**: Editing either the channel post or the thread post automatically syncs the change to the other — they behave as one post
+- **Reaction sync**: Reactions added or removed on one side of a `/ric` pair are mirrored onto the other
 - **DM/GM support**: Works in direct messages and group messages (picks the user's first team for permalink construction)
 
 ## Building
@@ -79,12 +82,23 @@ Other useful targets:
 3. Upload the `.tar.gz` file
 4. Enable the plugin
 
+## Configuration
+
+After enabling the plugin, its settings are under **System Console > Plugins > Reply in Channel**:
+
+| Setting | Default | Description |
+|---|---|---|
+| `BlockEchoReplies` — "Block replies to /ric echo posts" (dropdown) | *Install default* | Three choices: **Install default** — a **fresh install blocks** stray replies into `/ric` post threads, while an **upgraded install** (a server that already used `/ric` with an earlier version) keeps its previous non-blocking behavior; **Always block** / **Never block** — force either behavior permanently, surviving future upgrades. Either way, echo threads that already have replies are never sealed. Changing this takes effect immediately, no restart needed. |
+
+Technically: at its first activation this version writes a `ric_guard_mode` marker into its own KV store, classifying the install by whether legacy `/ric` KV data (`ric:` / `ric_pair:` mapping keys) predates it. KV stores survive plugin upgrades and start empty on genuinely fresh servers — note they even survive `mmctl plugin delete` (verified on Mattermost 11.7), so delete + re-upload is still an "upgrade". One edge case: an older install that *never used* `/ric` at all looks identical to a fresh one and gets blocking — harmless, since no echo posts exist to block. To change an already-classified install's default, set `BlockEchoReplies` explicitly (or delete the `ric_guard_mode` KV row to force reclassification).
+
 ## Architecture
 
 This is a server-only plugin (no webapp component). All functionality is implemented via:
 
 - **Slash command** (`/ric`) registered in `OnActivate`
-- **`ExecuteCommand`** hook handles the command, creates posts via `p.API.CreatePost()`, and builds permalinks
+- **`ExecuteCommand`** hook handles the command, creates posts via `p.API.CreatePost()`, and builds permalinks; refuses `/ric` issued inside a `/ric` post's own thread (unless `BlockEchoReplies` is disabled)
+- **`MessageWillBePosted`** hook rejects replies typed into a `/ric` channel post's thread before they are persisted, returning a reason with a permalink to the original thread (the echo post is stamped with a `ric_thread_root_id` prop that identifies it); inert when `BlockEchoReplies` is disabled
 - **`MessageHasBeenPosted`** hook listens for new thread replies and updates `/ric` channel posts with a "view newer replies" link
 - **`MessageHasBeenUpdated`** hook syncs edits bidirectionally between paired channel/thread posts
 - **KV store** maps thread root IDs to `/ric` channel post IDs, and stores bidirectional post pair mappings for edit sync
@@ -101,6 +115,7 @@ Since the channel post needs a link to the thread reply (and vice versa), and ne
 ## Limitations
 
 - **File attachments**: Mattermost's slash command API does not pass file attachment IDs to plugins. The plugin attempts to recover recently uploaded orphaned files, but this is best-effort and may not work in all cases. If attachments don't appear, try posting the file separately.
+- **Blocking applies to empty echo threads only**: the first reply to a `/ric` post's thread is rejected with a link to the original thread. An echo thread that *already* has replies (created before this version or while the plugin was disabled) keeps accepting replies — an existing conversation fades out instead of being sealed mid-flight. `/ric` is refused in any echo thread while blocking is enabled.
 
 ## Security
 
